@@ -1,10 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use dotenv::dotenv;
 use colored::*;
-use redman::{add_new_torrents_for_download, fetch_data, get_torrents_for_download, transform_groups, Database, GroupData, Type};
+use dotenv::dotenv;
+use redman::{
+    Database, GroupData, Type, add_new_torrents_for_download, fetch_data, transform_groups,
+};
 use url::Url;
-
 
 #[derive(Parser)]
 #[command(author, version, about = "Fetch and manage torrent collections", long_about = None)]
@@ -12,15 +13,19 @@ struct Args {
     /// Base URL for the tracker API
     #[arg(short, long, default_value = "https://redacted.sh/", global = true)]
     base_url: String,
-    
+
     /// Database file path for storing torrent pool data
-    #[arg(short, long, default_value = "/home/hendrik/Documents/test-redman/red_download_pool.db", global = true)]
+    #[arg(
+        short,
+        long,
+        default_value = "/home/hendrik/Documents/test-redman/red_download_pool.db",
+        global = true
+    )]
     pool: String,
 
     #[command(subcommand)]
     command: Commands,
 }
-
 
 #[derive(Subcommand)]
 enum Commands {
@@ -40,21 +45,22 @@ enum Commands {
     Watch {
         /// The number of torrents to add to the watchlist
         #[arg(default_value = "2")]
-        number: u32,
+        number: usize,
         /// Path to the Plex database file
-        #[arg(default_value = "/home/hendrik/Documents/test-redman/com.plexapp.plugins.library.db")]
+        #[arg(
+            default_value = "/home/hendrik/Documents/test-redman/com.plexapp.plugins.library.db"
+        )]
         plex: String,
         /// Directory where downloaded torrents are stored
         #[arg(long, default_value = "/home/hendrik/Documents/test-redman/torrents")]
         torrent_dir: String,
         /// Directory where downloaded files are stored
         #[arg(long, default_value = "/home/hendrik/Documents/test-redman/downloads")]
-        download_dir: String
+        download_dir: String,
     },
     /// Show statistics about stored data
     Stats,
 }
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -70,25 +76,53 @@ async fn main() -> Result<()> {
     let db = Database::new(&args.pool)?;
 
     match args.command {
-        Commands::Fetch { id, ftype, weight, verbose } => {
-            println!("{} collage {}...", "Fetching".green().bold(), id.to_string().cyan());
-            
+        Commands::Fetch {
+            id,
+            ftype,
+            weight,
+            verbose,
+        } => {
+            println!(
+                "{} collage {}...",
+                "Fetching".green().bold(),
+                id.to_string().cyan()
+            );
+
             let api_key = std::env::var("API_KEY").expect("API key environment variable not set");
             match fetch_data(&api_key, &args.base_url, id, ftype, verbose).await {
                 Ok(group_data) => {
                     match group_data {
                         GroupData::CollageData(ref collage_data) => {
                             if verbose {
-                                println!("{}: {}", "Collage name".cyan(), collage_data.name.bright_white());
-                                println!("{}: {}", "Category".cyan(), collage_data.collage_category_name);
-                                println!("{}: {}", "Total groups".cyan(), collage_data.torrent_groups.len());
+                                println!(
+                                    "{}: {}",
+                                    "Collage name".cyan(),
+                                    collage_data.name.bright_white()
+                                );
+                                println!(
+                                    "{}: {}",
+                                    "Category".cyan(),
+                                    collage_data.collage_category_name
+                                );
+                                println!(
+                                    "{}: {}",
+                                    "Total groups".cyan(),
+                                    collage_data.torrent_groups.len()
+                                );
                             }
-
-                        },
+                        }
                         GroupData::ArtistData(ref artist_data) => {
                             if verbose {
-                                println!("{}: {}", "Artist name".cyan(), artist_data.name.bright_white());
-                                println!("{}: {}", "Total groups".cyan(), artist_data.torrent_groups.len());
+                                println!(
+                                    "{}: {}",
+                                    "Artist name".cyan(),
+                                    artist_data.name.bright_white()
+                                );
+                                println!(
+                                    "{}: {}",
+                                    "Total groups".cyan(),
+                                    artist_data.torrent_groups.len()
+                                );
                             }
                         }
                     }
@@ -96,8 +130,11 @@ async fn main() -> Result<()> {
 
                     match db.store_data(&groups) {
                         Ok(stored_count) => {
-                            println!("{} {} torrents stored successfully!", 
-                                "✓".green().bold(), stored_count.to_string().bright_white());
+                            println!(
+                                "{} {} torrents stored successfully!",
+                                "✓".green().bold(),
+                                stored_count.to_string().bright_white()
+                            );
                         }
                         Err(e) => {
                             eprintln!("{} Failed to store data: {}", "✗".red().bold(), e);
@@ -110,12 +147,28 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
-        },
-        Commands::Watch { number, plex, torrent_dir, download_dir: _ } => {
+        }
+        Commands::Watch {
+            number,
+            plex,
+            torrent_dir,
+            download_dir: _,
+        } => {
             let api_key = std::env::var("API_KEY").expect("API key environment variable not set");
-            let torrs = add_new_torrents_for_download(&api_key, &args.base_url,&args.pool, &plex, &torrent_dir, number).await?;
-            println!("\n{} {} Torrents eligible for download:", 
-                "✓".green().bold(), torrs.len().to_string().bright_white());
+            let torrs = add_new_torrents_for_download(
+                &api_key,
+                &args.base_url,
+                &args.pool,
+                &plex,
+                &torrent_dir,
+                number,
+            )
+            .await?;
+            println!(
+                "\n{} {} torrent files downloaded",
+                "✓".green().bold(),
+                torrs.len().to_string().bright_white()
+            );
             for t in &torrs {
                 println!(
                     "{} | {} | {}",
@@ -124,31 +177,42 @@ async fn main() -> Result<()> {
                     t.album_name.bright_yellow()
                 );
             }
-        },
-        Commands::Stats => {
-            match db.get_stats() {
-                Ok(stats) => {
-                    println!("\n{}", "Database Statistics".cyan().bold().underline());
-                    println!("{}: {}", "Total Torrents".bold(), stats.total_torrents.to_string().bright_white());
-                    println!("{}: {}", "Unique Artists".bold(), stats.unique_artists.to_string().bright_white());
-                    println!("{}: {}", "Unique Albums".bold(), stats.unique_albums.to_string().bright_white());
-                    
-                    println!("\n{}", "Format Distribution:".bold());
-                    for (format, count) in stats.format_counts {
-                        let percentage = (count as f64 / stats.total_torrents as f64) * 100.0;
-                        println!("  {}: {} ({:.1}%)", 
-                            format.bright_white(), 
-                            count.to_string().cyan(), 
-                            percentage
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{} Failed to get stats: {}", "✗".red().bold(), e);
-                    std::process::exit(1);
+        }
+        Commands::Stats => match db.get_stats() {
+            Ok(stats) => {
+                println!("\n{}", "Database Statistics".cyan().bold().underline());
+                println!(
+                    "{}: {}",
+                    "Total Torrents".bold(),
+                    stats.total_torrents.to_string().bright_white()
+                );
+                println!(
+                    "{}: {}",
+                    "Unique Artists".bold(),
+                    stats.unique_artists.to_string().bright_white()
+                );
+                println!(
+                    "{}: {}",
+                    "Unique Albums".bold(),
+                    stats.unique_albums.to_string().bright_white()
+                );
+
+                println!("\n{}", "Format Distribution:".bold());
+                for (format, count) in stats.format_counts {
+                    let percentage = (count as f64 / stats.total_torrents as f64) * 100.0;
+                    println!(
+                        "  {}: {} ({:.1}%)",
+                        format.bright_white(),
+                        count.to_string().cyan(),
+                        percentage
+                    );
                 }
             }
-        }
+            Err(e) => {
+                eprintln!("{} Failed to get stats: {}", "✗".red().bold(), e);
+                std::process::exit(1);
+            }
+        },
     }
 
     Ok(())

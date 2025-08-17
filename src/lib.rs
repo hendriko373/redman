@@ -3,6 +3,9 @@ use std::{
     fs::{self, File},
     io::copy,
     path::{Path, PathBuf},
+    process::Command,
+    thread,
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -385,6 +388,8 @@ pub async fn add_new_torrents_for_download(
     plex_db: &str,
     torrent_dir: &str,
     num_torrents: usize,
+    remote_exe: &str,
+    download_dir: &str,
 ) -> Result<Vec<Torrent>> {
     let torrents = get_pool_torrents(pool_db)
         .and_then(|ts| filter_torrents_not_in_plex_library(&ts, plex_db))
@@ -397,7 +402,17 @@ pub async fn add_new_torrents_for_download(
         .map(|ts| ts.into_iter().take(num_torrents).collect::<Vec<_>>())?;
 
     for t in &torrents {
-        download_torrent(t.id, base_url, api, torrent_dir).await?;
+        let path = download_torrent(t.id, base_url, api, torrent_dir).await?;
+        thread::sleep(Duration::from_millis(150)); // Do not spam redacted API
+        let path_str = path.to_str().unwrap();
+        println!("{path_str}");
+        Command::new(remote_exe)
+            .arg("localhost:9091")
+            .args(["-a", "{path_str}"])
+            .args(["--download-dir", download_dir])
+            .arg("-s")
+            .output()
+            .map_err(|e| anyhow::anyhow!("Could not add {path_str} to transmission: {}", e))?;
     }
     Ok(torrents)
 }
@@ -523,7 +538,7 @@ pub async fn download_torrent(
     base_url: &str,
     api_key: &str,
     torrent_dir: &str,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let client = Client::new();
     let url = format!("{}ajax.php?action=download&id={}", base_url, torrent_id);
     let response = client
@@ -552,11 +567,11 @@ pub async fn download_torrent(
                 content
             ))?;
         let path = PathBuf::from(torrent_dir).join(fname);
-        let mut file = File::create(path)?;
+        let mut file = File::create(path.clone())?;
         let bytes = response.bytes().await?;
         let mut content = bytes.as_ref();
         copy(&mut content, &mut file)?;
-        Ok(())
+        Ok(path)
     } else {
         Err(anyhow::anyhow!(
             "Error downloading torrent file: {}",

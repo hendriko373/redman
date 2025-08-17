@@ -15,12 +15,7 @@ struct Args {
     base_url: String,
 
     /// Database file path for storing torrent pool data
-    #[arg(
-        short,
-        long,
-        default_value = "/home/hendrik/Documents/test-redman/red_download_pool.db",
-        global = true
-    )]
+    #[arg(short, long)]
     pool: String,
 
     #[command(subcommand)]
@@ -44,19 +39,20 @@ enum Commands {
     },
     Watch {
         /// The number of torrents to add to the watchlist
-        #[arg(default_value = "2")]
+        #[arg(short, long, default_value = "10")]
         number: usize,
         /// Path to the Plex database file
-        #[arg(
-            default_value = "/home/hendrik/Documents/test-redman/com.plexapp.plugins.library.db"
-        )]
+        #[arg(long)]
         plex: String,
         /// Directory where downloaded torrents are stored
-        #[arg(long, default_value = "/home/hendrik/Documents/test-redman/torrents")]
+        #[arg(long)]
         torrent_dir: String,
         /// Directory where downloaded files are stored
-        #[arg(long, default_value = "/home/hendrik/Documents/test-redman/downloads")]
+        #[arg(long)]
         download_dir: String,
+        /// transmission-remote executable
+        #[arg(long, default_value = "transmission-remote")]
+        transmission_remote: String,
     },
     /// Show statistics about stored data
     Stats,
@@ -152,7 +148,8 @@ async fn main() -> Result<()> {
             number,
             plex,
             torrent_dir,
-            download_dir: _,
+            download_dir,
+            transmission_remote,
         } => {
             let api_key = std::env::var("API_KEY").expect("API key environment variable not set");
             let torrs = add_new_torrents_for_download(
@@ -162,6 +159,8 @@ async fn main() -> Result<()> {
                 &plex,
                 &torrent_dir,
                 number,
+                &transmission_remote,
+                &download_dir,
             )
             .await?;
             println!(

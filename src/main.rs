@@ -37,7 +37,8 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
-    Watch {
+    /// Add torrents not in library to the transmission client for download
+    Download {
         /// The number of torrents to add to the watchlist
         #[arg(short, long, default_value = "10")]
         number: usize,
@@ -144,7 +145,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Watch {
+        Commands::Download {
             number,
             plex,
             torrent_dir,

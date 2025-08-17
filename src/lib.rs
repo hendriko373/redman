@@ -1,7 +1,9 @@
-use std::path::Path;
+use std::{collections::HashSet, fs::{self, File}, io::copy, path::{Path, PathBuf}};
 
 use anyhow::Result;
 use clap::ValueEnum;
+use html_escape::{decode_html_entities, decode_html_entities_to_string};
+use regex::Regex;
 use reqwest::Client;
 use colored::*;
 use serde::Deserialize;
@@ -100,8 +102,9 @@ struct TorrentApi {
     size: u64,
 }
 
+#[derive(Debug, Clone)]
 pub struct Torrent {
-    id: u32,
+    pub id: u32,
     pub album_name: String,
     pub artist_names: String,
     year: u32,
@@ -309,19 +312,22 @@ pub fn transform_groups(groups: &GroupData, weight: u32) -> Vec<Vec<Torrent>> {
         GroupData::ArtistData(artist) => {
             artist.torrent_groups.iter()
                 .map(|g| g.torrents.iter()
-                    .map(|t| Torrent {
-                        id: t.torrent_id,
-                        album_name: g.name.clone(),
-                        artist_names: artist.name.clone(),
-                        year: g.year,
-                        release_type: g.release_type,
-                        media: t.media.clone(),
-                        format: t.format.clone(),
-                        encoding: t.encoding.clone(),
-                        file_count: t.file_count,
-                        weight: weight,
-                        size: t.size,
-                    }).collect())
+                    .map(|t| {
+                        let artist_name = decode_html_entities(&artist.name);
+                        let album_name = decode_html_entities(&g.name);
+                        Torrent {
+                            id: t.torrent_id,
+                            album_name: album_name.to_string(),
+                            artist_names: artist_name.to_string(),
+                            year: g.year,
+                            release_type: g.release_type,
+                            media: t.media.clone(),
+                            format: t.format.clone(),
+                            encoding: t.encoding.clone(),
+                            file_count: t.file_count,
+                            weight: weight,
+                            size: t.size,
+                    }}).collect())
                 .collect()
         },
         GroupData::CollageData(collage) => {
@@ -352,13 +358,28 @@ pub fn transform_groups(groups: &GroupData, weight: u32) -> Vec<Vec<Torrent>> {
 }
 
 
+pub async fn add_new_torrents_for_download(api: &str, base_url: &str, pool_db: &str, plex_db: &str, torrent_dir: &str, num_torrents: u32) -> Result<Vec<Torrent>> {
+    let torrents = get_torrents_for_download(pool_db, plex_db, torrent_dir)?;
+    for t in &torrents {
+        download_torrent(t.id, base_url, api, torrent_dir).await?;
+    }
+    
+    Ok(torrents)
+}
+
+pub fn get_torrents_for_download(pool_db: &str, plex_db: &str, torrent_dir: &str) -> Result<Vec<Torrent>> {
+    get_pool_torrents(pool_db)
+        .and_then(|ts| filter_torrents_not_in_plex_library(&ts, plex_db))
+        .and_then(|ts| filter_torrents_not_in_torrent_dir(&ts, torrent_dir))
+}
+
 #[derive(Debug)]
-pub struct Album {
+struct Album {
     pub name: String,
     pub artists: String,
 }
 
-pub fn get_plex_library_albums(db_path: &str) -> Result<Vec<Album>> {
+fn get_plex_library_albums(db_path: &str) -> Result<Vec<Album>> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = conn.prepare(
         r#"
@@ -368,6 +389,7 @@ pub fn get_plex_library_albums(db_path: &str) -> Result<Vec<Album>> {
             JOIN metadata_items c ON b.parent_id = c.id
             where b.metadata_type = 9 AND c.metadata_type = 8
         "#)?;
+
     let r = stmt.query_map([], |row| {
         Ok(Album {
             name: row.get("album")?,
@@ -380,7 +402,7 @@ pub fn get_plex_library_albums(db_path: &str) -> Result<Vec<Album>> {
     Ok(r)
 }
 
-pub fn get_pool_torrents(db_path: &str) -> Result<Vec<Torrent>> {
+fn get_pool_torrents(db_path: &str) -> Result<Vec<Torrent>> {
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let mut stmt = conn.prepare(
         r#"
@@ -405,30 +427,51 @@ pub fn get_pool_torrents(db_path: &str) -> Result<Vec<Torrent>> {
         })?
         .map(|res| res.unwrap())
         .collect();
-        Ok(r)
+    Ok(r)
 }
 
 /// Get torrents from the download pool that are not in the Plex library
-pub fn get_torrents_not_in_plex_library(db_path: &str, plex_db: &str) -> Result<Vec<Torrent>> {
-    let pool_torrents = get_pool_torrents(db_path)?;
+fn filter_torrents_not_in_plex_library(torrents: &Vec<Torrent>, plex_db: &str) -> Result<Vec<Torrent>> {
+
     let plex_albums = get_plex_library_albums(plex_db)?;
 
-    let plex_album_names: Vec<String> = plex_albums.iter()
-        .map(|a| a.name.to_lowercase().clone()).collect();
-    let plex_artist_names: Vec<String> = plex_albums.iter()
-        .map(|a| a.artists.to_lowercase().clone()).collect();
+    let transform = |s: &String| {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+            .clone()
+    };
 
-    let filtered_torrents: Vec<Torrent> = pool_torrents.into_iter()
+    let filtered_torrents: Vec<Torrent> = torrents.into_iter()
         .filter(|t| {
-            !plex_album_names.contains(&t.album_name.to_lowercase()) 
-                || !plex_artist_names.contains(&t.artist_names.to_lowercase())
-        })
+            !plex_albums.iter().any(|a| 
+                transform(&a.artists) == transform(&t.artist_names)
+                    && transform(&a.name) == transform(&t.album_name))
+        })    
+        .cloned()
         .collect();
 
     Ok(filtered_torrents)
 }
 
-pub async fn download_torrent(torrent_id: u32, base_url: &str, api_key: &str) -> Result<Vec<u8>> {
+fn filter_torrents_not_in_torrent_dir(torrents: &Vec<Torrent>, torrent_dir: &str) -> Result<Vec<Torrent>> {
+    let dir_torrent_ids = fs::read_dir(torrent_dir)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(|s| s.to_owned())))
+        .map(|s| s.chars().rev().take_while(|c| c.is_ascii_digit()).collect::<String>().chars().rev().collect::<String>())
+        .filter_map(|s| s.parse::<u32>().ok())
+        .collect::<HashSet<_>>();
+
+    Ok(torrents.iter()
+        .filter(|t| !dir_torrent_ids.contains(&t.id))
+        .cloned()
+        .collect::<Vec<Torrent>>())
+}
+
+pub async fn download_torrent(torrent_id: u32, base_url: &str, api_key: &str, torrent_dir: &str) -> Result<()> {
     let client = Client::new();
     let url = format!("{}ajax.php?action=download&id={}", base_url, torrent_id);
     let response = client.get(&url)
@@ -437,9 +480,21 @@ pub async fn download_torrent(torrent_id: u32, base_url: &str, api_key: &str) ->
         .await?;
     
     if response.status().is_success() {
+        let content = response
+            .headers()
+            .get("Content-disposition")
+            .ok_or(anyhow::anyhow!("Headers does not contain Content-disposition"))?;
+        let re = Regex::new(r#"filename="([^"]+)""#)?;
+        let fname = re.captures(&content.to_str()?)
+            .and_then(|caps| caps.get(1).map(|n| n.as_str().to_string()))
+            .unwrap();
+        let path = PathBuf::from(torrent_dir).join(fname);
+        let mut file = File::create(path)?;
         let bytes = response.bytes().await?;
-        Ok(bytes.to_vec())
+        let mut content = bytes.as_ref();
+        copy(&mut content, &mut file)?;
+        Ok(())
     } else {
-        Err(anyhow::anyhow!("Failed to download torrent: HTTP {}", response.status()))
+        Err(anyhow::anyhow!("Error downloading torrent file: {}", response.status()))
     }
 }

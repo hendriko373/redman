@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use dotenv::dotenv;
 use colored::*;
-use redman::{fetch_data, get_torrents_not_in_plex_library, get_plex_library_albums, transform_groups, Database, GroupData, Type};
+use redman::{add_new_torrents_for_download, fetch_data, get_torrents_for_download, transform_groups, Database, GroupData, Type};
 use url::Url;
 
 
@@ -13,9 +13,9 @@ struct Args {
     #[arg(short, long, default_value = "https://redacted.sh/", global = true)]
     base_url: String,
     
-    /// Database file path
-    #[arg(short, long, default_value = "red_download_pool.db", global = true)]
-    database: String,
+    /// Database file path for storing torrent pool data
+    #[arg(short, long, default_value = "/home/hendrik/Documents/test-redman/red_download_pool.db", global = true)]
+    pool: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -41,8 +41,15 @@ enum Commands {
         /// The number of torrents to add to the watchlist
         #[arg(default_value = "2")]
         number: u32,
-        #[arg(default_value = "com.plexapp.plugins.library.db")]
-        plex_db: String,
+        /// Path to the Plex database file
+        #[arg(default_value = "/home/hendrik/Documents/test-redman/com.plexapp.plugins.library.db")]
+        plex: String,
+        /// Directory where downloaded torrents are stored
+        #[arg(long, default_value = "/home/hendrik/Documents/test-redman/torrents")]
+        torrent_dir: String,
+        /// Directory where downloaded files are stored
+        #[arg(long, default_value = "/home/hendrik/Documents/test-redman/downloads")]
+        download_dir: String
     },
     /// Show statistics about stored data
     Stats,
@@ -60,7 +67,7 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let db = Database::new(&args.database)?;
+    let db = Database::new(&args.pool)?;
 
     match args.command {
         Commands::Fetch { id, ftype, weight, verbose } => {
@@ -104,27 +111,18 @@ async fn main() -> Result<()> {
                 }
             }
         },
-        Commands::Watch { number: _, plex_db } => {
-            let albums = get_plex_library_albums(&plex_db)?;
-            println!("\n{} {} albums found in Plex library", 
-                "✓".green().bold(), albums.len().to_string().bright_white());
-            let torrs = get_torrents_not_in_plex_library(&args.database, &plex_db);
-            match torrs {
-                Ok(torrents) => {
-                    if torrents.is_empty() {
-                        println!("{} No torrents found that are not in Plex library", "✓".green().bold());
-                    } else {
-                        println!("\n{} {} torrents not found in Plex library:", 
-                            "✓".green().bold(), torrents.len().to_string().bright_white());
-                        for torrent in torrents {
-                            println!("  - {} by {}", torrent.album_name.bright_white(), torrent.artist_names.bright_white());
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{} Failed to get torrents: {}", "✗".red().bold(), e);
-                    std::process::exit(1);
-                }
+        Commands::Watch { number, plex, torrent_dir, download_dir: _ } => {
+            let api_key = std::env::var("API_KEY").expect("API key environment variable not set");
+            let torrs = add_new_torrents_for_download(&api_key, &args.base_url,&args.pool, &plex, &torrent_dir, number).await?;
+            println!("\n{} {} Torrents eligible for download:", 
+                "✓".green().bold(), torrs.len().to_string().bright_white());
+            for t in &torrs {
+                println!(
+                    "{} | {} | {}",
+                    t.id.to_string().bright_white(),
+                    t.artist_names.bright_cyan(),
+                    t.album_name.bright_yellow()
+                );
             }
         },
         Commands::Stats => {

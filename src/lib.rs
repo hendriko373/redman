@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fs::{self, File},
+    fs::{self, File, remove_file},
     io::copy,
     path::{Path, PathBuf},
     process::Command,
@@ -405,14 +405,25 @@ pub async fn add_new_torrents_for_download(
         let path = download_torrent(t.id, base_url, api, torrent_dir).await?;
         thread::sleep(Duration::from_millis(150)); // Do not spam redacted API
         let path_str = path.to_str().unwrap();
-        println!("{path_str}");
-        Command::new(remote_exe)
-            .arg("localhost:9091")
-            .args(["-a", "{path_str}"])
+        let mut cmd = Command::new(remote_exe);
+        cmd.arg("localhost:9091")
+            .args(["-n", "transmission:transmission"])
+            .args(["-a", path_str])
             .args(["--download-dir", download_dir])
-            .arg("-s")
-            .output()
-            .map_err(|e| anyhow::anyhow!("Could not add {path_str} to transmission: {}", e))?;
+            .arg("-s");
+        let output = cmd.output();
+        match output {
+            Ok(_) => {
+                println!("Add {} to transmission client.", t.id);
+            }
+            Err(e) => {
+                remove_file(&path)?;
+                Err(anyhow::anyhow!(
+                    "Could not add {path_str} to transmission: {}",
+                    e
+                ))?;
+            }
+        };
     }
     Ok(torrents)
 }

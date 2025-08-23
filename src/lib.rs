@@ -412,18 +412,15 @@ pub async fn add_new_torrents_for_download(
             .args(["--download-dir", download_dir])
             .arg("-s");
         let output = cmd.output();
-        match output {
-            Ok(_) => {
-                println!("Add {} to transmission client.", t.id);
-            }
-            Err(e) => {
-                remove_file(&path)?;
-                Err(anyhow::anyhow!(
-                    "Could not add {path_str} to transmission: {}",
-                    e
-                ))?;
-            }
-        };
+        if output.is_err() {
+            remove_file(&path)?;
+            Err(anyhow::anyhow!(
+                "{}: Could not add {} to transmission: {}",
+                remote_exe,
+                path_str,
+                output.err().unwrap()
+            ))?;
+        }
     }
     Ok(torrents)
 }
@@ -544,49 +541,78 @@ fn filter_torrents_not_in_torrent_dir(
         .collect::<Vec<Torrent>>())
 }
 
-pub async fn download_torrent(
+async fn download_torrent(
     torrent_id: u32,
     base_url: &str,
     api_key: &str,
     torrent_dir: &str,
 ) -> Result<PathBuf> {
     let client = Client::new();
-    let url = format!("{}ajax.php?action=download&id={}", base_url, torrent_id);
+    let response = request_torrent_download(&client, torrent_id, base_url, api_key, true).await?;
+
+    if response.status().is_success() {
+        write_torrent(torrent_dir, response).await
+    } else {
+        thread::sleep(Duration::from_millis(150)); // Do not spam redacted API
+        let response_no_fl =
+            request_torrent_download(&client, torrent_id, base_url, api_key, false).await?;
+        if response_no_fl.status().is_success() {
+            write_torrent(torrent_dir, response_no_fl).await
+        } else {
+            Err(anyhow::anyhow!(
+                "Error downloading torrent file: {}",
+                response_no_fl.status()
+            ))
+        }
+    }
+}
+
+async fn request_torrent_download(
+    client: &Client,
+    torrent_id: u32,
+    base_url: &str,
+    api_key: &str,
+    usetoken: bool,
+) -> Result<reqwest::Response, anyhow::Error> {
+    let t = if usetoken { 1 } else { 0 };
+    let url = format!(
+        "{}ajax.php?action=download&id={}&usetoken={}",
+        base_url, torrent_id, t
+    );
     let response = client
         .get(&url)
         .header("Authorization", api_key)
         .send()
         .await?;
+    Ok(response)
+}
 
-    if response.status().is_success() {
-        let content = response
-            .headers()
-            .get("Content-disposition")
-            .ok_or(anyhow::anyhow!(
-                "Headers does not contain Content-disposition"
-            ))
-            .and_then(|c| {
-                c.to_str()
-                    .map_err(|e| anyhow::anyhow!("Invalid header value: {}", e))
-            })?;
-        let re = Regex::new(r#"filename="([^"]+)""#)?;
-        let fname = re
-            .captures(content)
-            .and_then(|caps| caps.get(1).map(|n| n.as_str().to_string()))
-            .ok_or(anyhow::anyhow!(
-                "Could not parse default torrent file name for {}",
-                content
-            ))?;
-        let path = PathBuf::from(torrent_dir).join(fname);
-        let mut file = File::create(path.clone())?;
-        let bytes = response.bytes().await?;
-        let mut content = bytes.as_ref();
-        copy(&mut content, &mut file)?;
-        Ok(path)
-    } else {
-        Err(anyhow::anyhow!(
-            "Error downloading torrent file: {}",
-            response.status()
+async fn write_torrent(
+    torrent_dir: &str,
+    response: reqwest::Response,
+) -> std::result::Result<PathBuf, anyhow::Error> {
+    let content = response
+        .headers()
+        .get("Content-disposition")
+        .ok_or(anyhow::anyhow!(
+            "Headers does not contain Content-disposition"
         ))
-    }
+        .and_then(|c| {
+            c.to_str()
+                .map_err(|e| anyhow::anyhow!("Invalid header value: {}", e))
+        })?;
+    let re = Regex::new(r#"filename="([^"]+)""#)?;
+    let fname = re
+        .captures(content)
+        .and_then(|caps| caps.get(1).map(|n| n.as_str().to_string()))
+        .ok_or(anyhow::anyhow!(
+            "Could not parse default torrent file name for {}",
+            content
+        ))?;
+    let path = PathBuf::from(torrent_dir).join(fname);
+    let mut file = File::create(path.clone())?;
+    let bytes = response.bytes().await?;
+    let mut content = bytes.as_ref();
+    copy(&mut content, &mut file)?;
+    Ok(path)
 }

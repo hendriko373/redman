@@ -2,9 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::*;
 use dotenv::dotenv;
-use redman::{
-    Database, GroupData, Type, add_new_torrents_for_download, fetch_data, transform_groups,
-};
+use redman::{Database, GroupData, Type, add_new_torrents_for_download, fetch_data};
 use url::Url;
 
 #[derive(Parser)]
@@ -31,6 +29,7 @@ enum Commands {
         ftype: Type,
         /// Collage or artist ID to fetch
         id: u32,
+        /// Relative weight when selecting torrents for download
         #[arg(short, long, default_value = "10")]
         weight: u32,
         /// Show verbose output
@@ -80,8 +79,9 @@ async fn main() -> Result<()> {
             verbose,
         } => {
             println!(
-                "{} collage {}...",
+                "{} {} {}...",
                 "Fetching".green().bold(),
+                ftype.to_string().bright_white(),
                 id.to_string().cyan()
             );
 
@@ -123,9 +123,7 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    let groups = transform_groups(&group_data, weight);
-
-                    match db.store_data(&groups) {
+                    match db.store_data(&group_data, weight) {
                         Ok(stored_count) => {
                             println!(
                                 "{} {} torrents stored successfully!",

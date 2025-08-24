@@ -23,6 +23,15 @@ pub enum Type {
     Artist,
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Type::Collage => write!(f, "collage"),
+            Type::Artist => write!(f, "artist"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiResponseCollage {
     status: String,
@@ -43,6 +52,7 @@ struct ApiResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct CollageData {
+    pub id: u32,
     pub name: String,
     #[serde(rename = "collageCategoryName")]
     pub collage_category_name: String,
@@ -52,6 +62,7 @@ pub struct CollageData {
 
 #[derive(Debug, Deserialize)]
 pub struct ArtistData {
+    pub id: u32,
     pub name: String,
     #[serde(alias = "torrentgroup")]
     pub torrent_groups: Vec<TorrentGroupArtist>,
@@ -155,15 +166,48 @@ impl Database {
             "#,
             [],
         )?;
+        conn.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS fetches (
+                id INTEGER NOT NULL,
+                type INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                created_at datetime DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id, type)
+            )
+            "#,
+            [],
+        )?;
 
         Ok(Self { conn })
     }
 
-    pub fn store_data(&self, groups: &Vec<Vec<Torrent>>) -> Result<u32> {
+    pub fn store_data(&self, group_data: &GroupData, weight: u32) -> Result<u32> {
         let mut stored_count = 0;
 
-        for group in groups {
-            let mut torrents = group
+        self.conn.execute(
+            r#"
+            INSERT INTO fetches (id, type, name) VALUES (?, ?, ?) ON CONFLICT(id, type) DO NOTHING 
+            "#,
+            params![
+                match group_data {
+                    GroupData::ArtistData(a) => a.id,
+                    GroupData::CollageData(c) => c.id,
+                },
+                match group_data {
+                    GroupData::ArtistData(_) => 0,
+                    GroupData::CollageData(_) => 1,
+                },
+                match group_data {
+                    GroupData::ArtistData(a) => &a.name,
+                    GroupData::CollageData(c) => &c.name,
+                }
+            ],
+        )?;
+
+        let groups = transform_groups(&group_data, weight);
+        for g in groups {
+            let mut torrents = g
                 .iter()
                 .filter(|t| t.release_type == 1)
                 .filter(|t| {
@@ -321,7 +365,7 @@ pub async fn fetch_data(
     Ok(api_response.response)
 }
 
-pub fn transform_groups(groups: &GroupData, weight: u32) -> Vec<Vec<Torrent>> {
+fn transform_groups(groups: &GroupData, weight: u32) -> Vec<Vec<Torrent>> {
     match groups {
         GroupData::ArtistData(artist) => artist
             .torrent_groups

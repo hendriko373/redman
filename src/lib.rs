@@ -642,12 +642,12 @@ async fn write_torrent(
             "Headers does not contain Content-disposition"
         ))
         .and_then(|c| {
-            c.to_str()
+            String::from_utf8(c.as_bytes().to_vec())
                 .map_err(|e| anyhow::anyhow!("Invalid header value: {}", e))
         })?;
     let re = Regex::new(r#"filename="([^"]+)""#)?;
     let fname = re
-        .captures(content)
+        .captures(&content)
         .and_then(|caps| caps.get(1).map(|n| n.as_str().to_string()))
         .ok_or(anyhow::anyhow!(
             "Could not parse default torrent file name for {}",

@@ -12,6 +12,8 @@ use anyhow::Result;
 use clap::ValueEnum;
 use colored::*;
 use html_escape::decode_html_entities;
+use itertools::Itertools;
+use rand::seq::SliceRandom;
 use regex::Regex;
 use reqwest::Client;
 use rusqlite::{Connection, OpenFlags, params};
@@ -438,12 +440,22 @@ pub async fn add_new_torrents_for_download(
     let torrents = get_pool_torrents(pool_db)
         .and_then(|ts| filter_torrents_not_in_plex_library(&ts, plex_db))
         .and_then(|ts| filter_torrents_not_in_torrent_dir(&ts, torrent_dir))
-        .map(|mut ts| {
-            ts.sort_by_key(|t| t.weight);
-            ts.reverse();
-            ts
+        .map(|ts: Vec<Torrent>| {
+            let mut groups: Vec<(u32, Vec<Torrent>)> = ts
+                .iter()
+                .chunk_by(|t| t.weight)
+                .into_iter()
+                .map(|(w, group)| {
+                    let mut shuffled: Vec<Torrent> = group.cloned().collect();
+                    shuffled.shuffle(&mut rand::rng());
+                    (w, shuffled)
+                })
+                .collect();
+            groups.sort_by_key(|t| t.0);
+            groups.reverse();
+            groups.into_iter().flat_map(|(_, group)| group).collect()
         })
-        .map(|ts| ts.into_iter().take(num_torrents).collect::<Vec<_>>())?;
+        .map(|ts: Vec<Torrent>| ts.into_iter().take(num_torrents).collect::<Vec<_>>())?;
 
     for t in &torrents {
         let path = download_torrent(t.id, base_url, api, torrent_dir).await?;

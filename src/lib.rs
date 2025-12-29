@@ -53,6 +53,22 @@ struct ApiResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct ApiResponseTorrent {
+    response: TorrentResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct TorrentResponse {
+    torrent: TorrentData,
+}
+
+#[derive(Debug, Deserialize)]
+struct TorrentData {
+    #[serde(rename = "isFreeload")]
+    is_freeload: bool,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct CollageData {
     pub id: u32,
     pub name: String,
@@ -437,26 +453,31 @@ pub async fn add_new_torrents_for_download(
     remote_exe: &str,
     download_dir: &str,
     use_fl: bool,
+    freeload_only: bool,
 ) -> Result<Vec<Torrent>> {
-    let torrents = get_pool_torrents(pool_db)
+    let mut torrents = get_pool_torrents(pool_db)
         .and_then(|ts| filter_torrents_not_in_plex_library(&ts, plex_db))
-        .and_then(|ts| filter_torrents_not_in_torrent_dir(&ts, torrent_dir))
-        .map(|ts: Vec<Torrent>| {
-            let mut groups: Vec<(u32, Vec<Torrent>)> = ts
-                .iter()
-                .chunk_by(|t| t.weight)
-                .into_iter()
-                .map(|(w, group)| {
-                    let mut shuffled: Vec<Torrent> = group.cloned().collect();
-                    shuffled.shuffle(&mut rand::rng());
-                    (w, shuffled)
-                })
-                .collect();
-            groups.sort_by_key(|t| t.0);
-            groups.reverse();
-            groups.into_iter().flat_map(|(_, group)| group).collect()
+        .and_then(|ts| filter_torrents_not_in_torrent_dir(&ts, torrent_dir))?;
+
+    let mut groups: Vec<(u32, Vec<Torrent>)> = torrents
+        .iter()
+        .chunk_by(|t| t.weight)
+        .into_iter()
+        .map(|(w, group)| {
+            let mut shuffled: Vec<Torrent> = group.cloned().collect();
+            shuffled.shuffle(&mut rand::rng());
+            (w, shuffled)
         })
-        .map(|ts: Vec<Torrent>| ts.into_iter().take(num_torrents).collect::<Vec<_>>())?;
+        .collect();
+    groups.sort_by_key(|t| t.0);
+    groups.reverse();
+    torrents = groups.into_iter().flat_map(|(_, group)| group).collect();
+
+    if freeload_only {
+        torrents = filter_freeload_torrents(&torrents, base_url, api, num_torrents).await?;
+    } else {
+        torrents = torrents.into_iter().take(num_torrents).collect::<Vec<_>>();
+    }
 
     for t in &torrents {
         let path = download_torrent(t.id, base_url, api, torrent_dir, use_fl).await?;
@@ -596,6 +617,32 @@ fn filter_torrents_not_in_torrent_dir(
         .filter(|t| !dir_torrent_ids.contains(&t.id))
         .cloned()
         .collect::<Vec<Torrent>>())
+}
+
+async fn filter_freeload_torrents(
+    ts: &Vec<Torrent>,
+    base_url: &str,
+    api: &str,
+    max_num: usize,
+) -> Result<Vec<Torrent>> {
+    let mut result = Vec::new();
+    let client = Client::new();
+    let mut i = 0;
+    while result.len() < max_num && i < ts.len() {
+        let t = &ts[i];
+        let url = format!("{}ajax.php?action=torrent&id={}", base_url, t.id);
+        let response = client.get(&url).header("Authorization", api).send().await?;
+        thread::sleep(Duration::from_millis(150)); // Do not spam redacted API
+        let r = response.json::<ApiResponseTorrent>().await?;
+        if r.response.torrent.is_freeload {
+            result.push(t.clone());
+            println!("{} {}", "Freeload torrent added:".green(), t.id);
+        } else {
+            println!("{} {}", "Skipping non-freeload torrent:".yellow(), t.id);
+        }
+        i += 1;
+    }
+    Ok(result)
 }
 
 async fn download_torrent(

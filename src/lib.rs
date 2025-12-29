@@ -436,6 +436,7 @@ pub async fn add_new_torrents_for_download(
     num_torrents: usize,
     remote_exe: &str,
     download_dir: &str,
+    use_fl: bool,
 ) -> Result<Vec<Torrent>> {
     let torrents = get_pool_torrents(pool_db)
         .and_then(|ts| filter_torrents_not_in_plex_library(&ts, plex_db))
@@ -458,7 +459,7 @@ pub async fn add_new_torrents_for_download(
         .map(|ts: Vec<Torrent>| ts.into_iter().take(num_torrents).collect::<Vec<_>>())?;
 
     for t in &torrents {
-        let path = download_torrent(t.id, base_url, api, torrent_dir).await?;
+        let path = download_torrent(t.id, base_url, api, torrent_dir, use_fl).await?;
         thread::sleep(Duration::from_millis(150)); // Do not spam redacted API
         let path_str = path.to_str().unwrap();
         let mut cmd = Command::new(remote_exe);
@@ -602,9 +603,10 @@ async fn download_torrent(
     base_url: &str,
     api_key: &str,
     torrent_dir: &str,
+    use_fl: bool,
 ) -> Result<PathBuf> {
     let client = Client::new();
-    let response = request_torrent_download(&client, torrent_id, base_url, api_key, true).await?;
+    let response = request_torrent_download(&client, torrent_id, base_url, api_key, use_fl).await?;
 
     if response.status().is_success() {
         write_torrent(torrent_dir, response).await
@@ -628,9 +630,9 @@ async fn request_torrent_download(
     torrent_id: u32,
     base_url: &str,
     api_key: &str,
-    usetoken: bool,
+    use_fl: bool,
 ) -> Result<reqwest::Response, anyhow::Error> {
-    let t = if usetoken { 1 } else { 0 };
+    let t = if use_fl { 1 } else { 0 };
     let url = format!(
         "{}ajax.php?action=download&id={}&usetoken={}",
         base_url, torrent_id, t

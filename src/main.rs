@@ -53,6 +53,9 @@ enum Commands {
         /// transmission-remote executable
         #[arg(long, default_value = "transmission-remote")]
         transmission_remote: String,
+        /// Do not try to use freeleech tokens
+        #[arg(long)]
+        no_fl: bool,
     },
     /// Show statistics about stored data
     Stats,
@@ -149,6 +152,7 @@ async fn main() -> Result<()> {
             torrent_dir,
             download_dir,
             transmission_remote,
+            no_fl,
         } => {
             let api_key = std::env::var("API_KEY").expect("API key environment variable not set");
             let torrs = add_new_torrents_for_download(
@@ -160,6 +164,7 @@ async fn main() -> Result<()> {
                 number,
                 &transmission_remote,
                 &download_dir,
+                !no_fl,
             )
             .await?;
             println!(
